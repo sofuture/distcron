@@ -87,7 +87,6 @@ func (node *Node) Start() {
 }
 
 func (node *Node) Stop() {
-	node.candidate.Resign()
 	node.serf.Shutdown()
 }
 
@@ -144,9 +143,6 @@ func (node *Node) queryRequestTelemetry() {
 func (node *Node) run() {
 	serfShutdownChannel := node.serf.ShutdownCh()
 
-	node.candidate = leadership.NewCandidate(node.db.store, CLeadershipKey,
-		node.config.NodeName, cDefaultLeaderLock)
-
 	leaderChannel := make(chan bool, cChanBuffer)
 	stopElectionChannel := make(chan bool, cChanBuffer)
 	go node.electionLoop(leaderChannel, stopElectionChannel)
@@ -198,9 +194,11 @@ func (node *Node) run() {
 }
 
 func (node *Node) electionLoop(leaderChannel chan bool, stopChannel chan bool) {
+	node.candidate = leadership.NewCandidate(node.db.store, CLeadershipKey,
+		node.config.NodeName, cDefaultLeaderLock)
 	electionChan, errorChan := node.candidate.RunForElection()
 
-	quit := true
+	quit := false
 	for {
 		select {
 		case <-stopChannel:
@@ -213,6 +211,7 @@ func (node *Node) electionLoop(leaderChannel chan bool, stopChannel chan bool) {
 			if quit {
 				return
 			}
+			glog.Infof("[%s] Will retry election in %v", node.GetName(), cSleepBetweenElections)
 			time.Sleep(cSleepBetweenElections)
 			electionChan, errorChan = node.candidate.RunForElection()
 		case elected := <-electionChan:

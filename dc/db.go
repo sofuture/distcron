@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"github.com/docker/libkv"
 	"github.com/docker/libkv/store"
-	"github.com/docker/libkv/store/etcd"
+	"github.com/docker/libkv/store/consul"
 	"github.com/golang/glog"
 )
 
@@ -29,12 +29,12 @@ type DB struct {
 }
 
 func init() {
-	etcd.Register()
+	consul.Register()
 }
 
 func ConnectDB(hosts []string) (db *DB, err error) {
 	db = &DB{}
-	db.store, err = libkv.NewStore(store.ETCD, hosts,
+	db.store, err = libkv.NewStore(store.CONSUL, hosts,
 		&store.Config{Bucket: "distcron"})
 	return
 }

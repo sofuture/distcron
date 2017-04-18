@@ -2,6 +2,10 @@ package dc
 
 import (
 	"fmt"
+	"github.com/docker/leadership"
+	"github.com/docker/libkv"
+	"github.com/docker/libkv/store"
+	"github.com/golang/glog"
 	"github.com/hashicorp/serf/serf"
 	"github.com/stretchr/testify/assert"
 	"os"
@@ -10,7 +14,8 @@ import (
 )
 
 func testDB() (*DB, error) {
-	return ConnectDB([]string{"172.17.8.101:2379"})
+	//return ConnectDB([]string{"172.17.8.101:2379"})
+	return ConnectDB([]string{"127.0.0.1:8500"})
 }
 
 func mkTelemetryChan(label string, t *testing.T) chan *TelemetryInfo {
@@ -69,7 +74,7 @@ func TestOneNode(t *testing.T) {
 	time.Sleep(time.Minute * 10)
 }
 
-func TestCluster(t *testing.T) {
+func TestBasicCluster(t *testing.T) {
 	node1, node2 := makeTestCluster(t)
 
 	time.Sleep(time.Second * 1)
@@ -82,6 +87,30 @@ func TestCluster(t *testing.T) {
 	node2.serf.Shutdown()
 }
 
+func TestClusterOwnershipChange(t *testing.T) {
+	node1, node2 := makeTestCluster(t)
+	for !node1.IsLeader() && !node2.IsLeader() {
+		time.Sleep(time.Second)
+	}
+	leaderName, _, err := node1.GetLeader()
+	assert.NoError(t, err)
+
+	var leader, follower *Node
+	if leaderName == "one" {
+		leader, follower = node1, node2
+	} else {
+		leader, follower = node2, node1
+	}
+
+	leader.Stop()
+	time.Sleep(time.Second * 20)
+	for !follower.IsLeader() {
+		time.Sleep(time.Second)
+	}
+
+	t.Log("New leader")
+}
+
 func printEvents(name string, t *testing.T, node *Node) {
 	for e := range node.serfChannel {
 		if me, ok := e.(serf.MemberEvent); ok {
@@ -91,4 +120,39 @@ func printEvents(name string, t *testing.T, node *Node) {
 		}
 	}
 	t.Log("Channel closed")
+}
+
+func TestLeadership(t *testing.T) {
+	c1 := mkCandidate("one", "127.0.0.1:8500")
+	c2 := mkCandidate("two", "127.0.0.1:8500")
+	time.Sleep(time.Second * 5)
+	if c1.IsLeader() {
+		c1.Stop()
+	} else {
+		c2.Stop()
+	}
+	time.Sleep(time.Second * 5)
+}
+
+func mkCandidate(name, dbHost string) *leadership.Candidate {
+	store, _ := libkv.NewStore(store.CONSUL, []string{dbHost},
+		&store.Config{Bucket: "distcron"})
+
+	candidate := leadership.NewCandidate(store, CLeadershipKey,
+		name, cDefaultLeaderLock)
+
+	go func() {
+		electionChan, errorChan := candidate.RunForElection()
+		for {
+			select {
+			case leader := <-electionChan:
+				glog.Infof("[%s] leader=%v", name, leader)
+			case err := <-errorChan:
+				glog.Errorf("[%s] error=%v", name, err)
+				electionChan, errorChan = candidate.RunForElection()
+			}
+		}
+	}()
+
+	return candidate
 }

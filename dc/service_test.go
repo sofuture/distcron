@@ -1,7 +1,7 @@
 package dc
 
 import (
-	"github.com/golang/glog"
+	"github.com/stretchr/testify/assert"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"io"
@@ -21,67 +21,61 @@ func mkApiClient(dialTo string) (DistCronClient, error) {
 	}
 }
 
-func TestService(t *testing.T) {
-	dbHosts := []string{"172.17.8.101:2379"}
+func mkServiceCluster(t *testing.T) (svcA, svcB *DistCron, err error) {
+	//dbHosts := []string{"172.17.8.101:2379"}
+	dbHosts := []string{"127.0.0.1:8500"}
 
-	svcA, err := NewDistCron(&ClusterConfig{
+	svcA, err = NewDistCron(&ClusterConfig{
 		NodeName: "A",
 		BindAddr: "127.0.0.1",
 		BindPort: 5006,
 	}, dbHosts, ":5556")
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	defer svcA.Stop()
+	assert.NoError(t, err)
 
-	time.Sleep(time.Second * 1)
+	assert.NoError(t, ENoNodesAvailable)
 
-	svcB, err := NewDistCron(&ClusterConfig{
+	svcB, err = NewDistCron(&ClusterConfig{
 		NodeName: "B",
 		BindAddr: "127.0.0.1",
 		BindPort: 5007,
 	}, dbHosts, ":5557")
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	defer svcB.Stop()
+	assert.NoError(t, err)
 
-	time.Sleep(time.Second * 1)
-
-	if _, err := svcB.node.serf.Join([]string{"127.0.0.1:5006"}, true); err != nil {
-		t.Error(err)
-		return
-	}
+	_, err = svcB.node.serf.Join([]string{"127.0.0.1:5006"}, true)
+	assert.NoError(t, err)
 
 	for !svcA.IsLeader() && !svcB.IsLeader() {
 		time.Sleep(time.Second * 1)
 	}
 
-	clientA, err := svcA.GetRpcForNode("A")
-	clientB, err := svcA.GetRpcForNode("B")
-
-	handle, err := clientA.RunJob(context.Background(), &Job{
-		ContainerName: "hello-world",
-		CpuLimit:      1,
-		MemLimitMb:    500,
-	})
-
-	if err != nil {
-		t.Error(err)
-		return
-	} else {
-		t.Logf("Got job handle %v", handle)
-	}
+	return
 }
 
-// it doesn't work within single process likely due to etcd client
-// so need be rewritten to have all that happening in separate processes
-func testNodeRoleSwitch(svcA, svcB DistCronClient, handle *JobHandle) {
+func TestBasicService(t *testing.T) {
+	svcA, svcB, err := mkServiceCluster(t)
+	assert.NoError(t, err)
+	defer svcA.Stop()
+	defer svcB.Stop()
+
+	clientA, err := svcA.GetRpcForNode("A")
+	assert.NoError(t, err)
+	clientB, err := svcA.GetRpcForNode("A")
+	assert.NoError(t, err)
+
+	testApiBasics(clientA, t)
+	testApiBasics(clientB, t)
+}
+
+func testNodeRoleSwitch(svcA, svcB *DistCron, t *testing.T) {
 	leader, _ := svcA.GetLeaderNode()
 	var other *DistCron
 	var otherClient DistCronClient
+
+	clientA, err := svcA.GetRpcForNode("A")
+	assert.NoError(t, err)
+	clientB, err := svcA.GetRpcForNode("B")
+	assert.NoError(t, err)
+
 	if leader == "A" {
 		svcA.Stop()
 		other, otherClient = svcB, clientB
@@ -90,35 +84,38 @@ func testNodeRoleSwitch(svcA, svcB DistCronClient, handle *JobHandle) {
 		other, otherClient = svcA, clientA
 	}
 
+	_, err = otherClient.RunJob(context.Background(), &Job{
+		ContainerName: "hello-world",
+		CpuLimit:      1,
+		MemLimitMb:    500,
+	})
+	if other.IsLeader() {
+		assert.NoError(t, err)
+	} else {
+		assert.Error(t, err)
+	}
+
 	for other.IsLeader() == false {
 		time.Sleep(time.Second * 3)
-		if false {
-			testApiBasics(otherClient, handle, t)
-		}
 	}
 }
-func testApiBasics(client DistCronClient, handle *JobHandle, t *testing.T) {
-	if status, err := client.StopJob(context.Background(), handle); err != nil {
-		glog.Info("StopJob", status, err, handle)
-		t.Error(err)
-	} else {
-		glog.Info("StopJob", status, err, handle)
-		t.Log(status)
-	}
 
-	if status, err := client.GetJobStatus(context.Background(), handle); err != nil {
-		glog.Info("GetJobStatus", status, err, handle)
-		t.Error(err)
-	} else {
-		glog.Info("GetJobStatus", status, err, handle)
-		t.Log(status)
-	}
+func testApiBasics(client DistCronClient, t *testing.T) {
+	handle, err := client.RunJob(context.Background(), &Job{
+		ContainerName: "hello-world",
+		CpuLimit:      1,
+		MemLimitMb:    500,
+	})
+	assert.NoError(t, err)
+
+	_, err = client.StopJob(context.Background(), handle)
+	assert.NoError(t, err)
+
+	_, err = client.GetJobStatus(context.Background(), handle)
+	assert.NoError(t, err)
 
 	output, err := client.GetJobOutput(context.Background(), handle)
-	if err != nil {
-		t.Error(err)
-		return
-	}
+	assert.NoError(t, err)
 	for {
 		data, err := output.Recv()
 		if err == io.EOF {
@@ -129,5 +126,4 @@ func testApiBasics(client DistCronClient, handle *JobHandle, t *testing.T) {
 		}
 		t.Log(string(data.Data))
 	}
-
 }
