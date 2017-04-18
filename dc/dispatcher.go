@@ -98,6 +98,7 @@ func (d *dispatcher) newJob(job *Job, retryCounter *int) (*JobHandle, error) {
 		d.nodeFailed(node.Name)
 		return d.newJob(job, retryCounter)
 	} else {
+		d.clearNodeErrors(node.Name)
 		return handle, nil
 	}
 }
