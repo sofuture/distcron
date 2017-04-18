@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package dc;
+
+service DistCron {
+  rpc RunJob(Job) returns (JobHandle) {}
+  rpc GetJobOutput(JobHandle) returns (stream Output) {}
+  rpc GetJobStatus(JobHandle) returns (JobStatus) {}
+  rpc StopJob(JobHandle) returns (JobStatus) {}  
+  // internal API 
+  rpc RunJobOnThisNode(Job) returns (JobHandle) {}
+}
+
+message Job {
+  string container_name = 1;
+  float cpu_limit = 2;
+  int64 mem_limit_mb = 3;
+}
+
+message JobHandle {
+  string handle = 1;
+}
+
+message JobStatus {
+  string status = 1;
+}
+
+message Output {
+  bytes data = 1; 
+}
