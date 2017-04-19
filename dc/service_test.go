@@ -32,8 +32,6 @@ func mkServiceCluster(t *testing.T) (svcA, svcB *DistCron, err error) {
 	}, dbHosts, ":5556")
 	assert.NoError(t, err)
 
-	assert.NoError(t, ENoNodesAvailable)
-
 	svcB, err = NewDistCron(&ClusterConfig{
 		NodeName: "B",
 		BindAddr: "127.0.0.1",
@@ -41,8 +39,7 @@ func mkServiceCluster(t *testing.T) (svcA, svcB *DistCron, err error) {
 	}, dbHosts, ":5557")
 	assert.NoError(t, err)
 
-	_, err = svcB.node.serf.Join([]string{"127.0.0.1:5006"}, true)
-	assert.NoError(t, err)
+	assert.NoError(t, svcB.node.Join([]string{"127.0.0.1:5006"}))
 
 	for !svcA.IsLeader() && !svcB.IsLeader() {
 		time.Sleep(time.Second * 1)

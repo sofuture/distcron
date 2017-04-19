@@ -22,8 +22,7 @@ import (
 type dispatcher struct {
 	sync.Mutex
 	api              RpcInfo
-	node             *Node
-	nodes            []*serf.Member
+	node             Node
 	nodeInfo         map[string]*nodeInfo
 	telemetryChannel chan *TelemetryInfo
 	stopChannel      chan bool
@@ -42,7 +41,7 @@ const cMB = 2 << 19
 const cMinRAM = cMB * 500
 const cMinCPU = 0.0
 
-func NewDispatcher(node *Node, api RpcInfo, telemetryChannel chan *TelemetryInfo) Dispatcher {
+func NewDispatcher(node Node, api RpcInfo, telemetryChannel chan *TelemetryInfo) Dispatcher {
 	return &dispatcher{
 		api:              api,
 		node:             node,
@@ -78,7 +77,7 @@ func (d *dispatcher) NewJob(job *Job) (*JobHandle, error) {
 }
 
 func (d *dispatcher) newJob(job *Job, retryCounter *int) (*JobHandle, error) {
-	if *retryCounter++; *retryCounter >= d.node.serf.NumNodes() {
+	if *retryCounter++; *retryCounter >= d.node.SerfMembersCount() {
 		return nil, ENoNodesAvailable
 	}
 
@@ -104,13 +103,11 @@ func (d *dispatcher) newJob(job *Job, retryCounter *int) (*JobHandle, error) {
 }
 
 func (d *dispatcher) getAvailableNode(job *Job) *serf.Member {
-	members := d.node.serf.Members()
+	members := d.node.SerfMembers()
 	now := time.Now()
 
 	d.Lock()
 	defer d.Unlock()
-
-	d.nodes = make([]*serf.Member, 0, len(members))
 
 	for _, member := range members {
 		if member.Status == serf.StatusAlive {
@@ -153,7 +150,7 @@ func (d *dispatcher) updateTelemetry(tm *TelemetryInfo) {
 	d.Lock()
 	defer d.Unlock()
 
-	info := d.getNodeInfo(tm.node)
+	info := d.getNodeInfo(tm.Node)
 	cpu := 0.0
 	for _, proc := range tm.Cpu {
 		cpu += float64(proc.Cores)

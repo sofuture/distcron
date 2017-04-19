@@ -1,14 +1,12 @@
 package dc
 
 import (
-	"fmt"
 	"github.com/docker/leadership"
 	"github.com/docker/libkv"
 	"github.com/docker/libkv/store"
 	"github.com/golang/glog"
 	"github.com/hashicorp/serf/serf"
-	"github.com/stretchr/testify/assert"
-	"os"
+	"github.com/stretchr/testify/require"
 	"testing"
 	"time"
 )
@@ -28,11 +26,11 @@ func mkTelemetryChan(label string, t *testing.T) chan *TelemetryInfo {
 	return ch
 }
 
-func makeTestNode(t *testing.T, name string, port int) *Node {
+func makeTestNode(t *testing.T, name string, port int) Node {
 	leaderChannel := make(chan bool, 12)
 
 	db, err := testDB()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	config := &ClusterConfig{
 		NodeName: name,
@@ -42,9 +40,9 @@ func makeTestNode(t *testing.T, name string, port int) *Node {
 
 	telemetryChannel := mkTelemetryChan(name, t)
 	node, err := NewClusterNode(config, db, leaderChannel, telemetryChannel)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
-	go printEvents(name, t, node)
+	go printEvents(name, t, node.(*cronNode))
 	go func() {
 		for leader := range leaderChannel {
 			t.Logf("[%s] : leader %v", name, leader)
@@ -56,35 +54,29 @@ func makeTestNode(t *testing.T, name string, port int) *Node {
 	return node
 }
 
-func makeTestCluster(t *testing.T) (*Node, *Node) {
+func makeTestCluster(t *testing.T) (Node, Node) {
 	node1 := makeTestNode(t, "one", 5001)
 	node2 := makeTestNode(t, "two", 5002)
 
 	time.Sleep(time.Second * 1)
 
-	if _, err := node2.serf.Join([]string{"127.0.0.1:5001"}, true); err != nil {
+	if err := node2.Join([]string{"127.0.0.1:5001"}); err != nil {
 		t.Error(err)
 	}
 
 	return node1, node2
 }
 
-func TestOneNode(t *testing.T) {
-	makeTestNode(t, fmt.Sprintf("%d", os.Getpid()), os.Getpid())
-	time.Sleep(time.Minute * 10)
-}
-
 func TestBasicCluster(t *testing.T) {
 	node1, node2 := makeTestCluster(t)
 
 	time.Sleep(time.Second * 1)
-	if len(node1.serf.Members()) != 2 || len(node2.serf.Members()) != 2 {
+	if node1.SerfMembersCount() != 2 || node2.SerfMembersCount() != 2 {
 		t.Error("Nodes did not find each other")
 	}
 
-	time.Sleep(time.Minute * 1)
-	node1.serf.Shutdown()
-	node2.serf.Shutdown()
+	node1.Stop()
+	node2.Stop()
 }
 
 func TestClusterOwnershipChange(t *testing.T) {
@@ -93,9 +85,9 @@ func TestClusterOwnershipChange(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 	leaderName, _, err := node1.GetLeader()
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
-	var leader, follower *Node
+	var leader, follower Node
 	if leaderName == "one" {
 		leader, follower = node1, node2
 	} else {
@@ -111,7 +103,7 @@ func TestClusterOwnershipChange(t *testing.T) {
 	t.Log("New leader")
 }
 
-func printEvents(name string, t *testing.T, node *Node) {
+func printEvents(name string, t *testing.T, node *cronNode) {
 	for e := range node.serfChannel {
 		if me, ok := e.(serf.MemberEvent); ok {
 			t.Logf("%s : %s : %v", name, e, me.Members)

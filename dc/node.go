@@ -34,7 +34,7 @@ type ClusterConfig struct {
 
 type queryResponder func(query *serf.Query) (interface{}, error)
 
-type Node struct {
+type cronNode struct {
 	config           *ClusterConfig
 	serfChannel      chan serf.Event
 	serf             *serf.Serf
@@ -53,8 +53,8 @@ const cTelemetryAcquisitionPeriod = time.Second * 15 // must be > then cQueryTim
 const cQueryTelemetry = "DC_TELE"
 
 func NewClusterNode(config *ClusterConfig, db *DB,
-	leaderChannel chan bool, telemetryChannel chan *TelemetryInfo) (node *Node, err error) {
-	node = &Node{
+	leaderChannel chan bool, telemetryChannel chan *TelemetryInfo) (Node, error) {
+	node := &cronNode{
 		db:               db,
 		config:           config,
 		serfChannel:      make(chan serf.Event, cChanBuffer),
@@ -73,25 +73,26 @@ func NewClusterNode(config *ClusterConfig, db *DB,
 	serfConfig.MemberlistConfig.BindPort = config.BindPort
 	serfConfig.NodeName = config.NodeName
 
+	var err error
 	node.serf, err = serf.Create(serfConfig)
 	if err != nil {
 		glog.Error(err)
 		return nil, err
 	}
 
-	return
+	return node, err
 }
 
-func (node *Node) Start() {
+func (node *cronNode) Start() {
 	go node.run()
 }
 
-func (node *Node) Stop() {
+func (node *cronNode) Stop() {
 	node.serf.Shutdown()
 }
 
 type TelemetryInfo struct {
-	node string
+	Node string
 	Mem  *mem.VirtualMemoryStat `json:"mem"`
 	Cpu  []cpu.InfoStat         `json:"cpu"`
 	Load *load.AvgStat          `json:"load"`
@@ -113,7 +114,7 @@ func queryRespondTelemetry(query *serf.Query) (interface{}, error) {
 	return info, nil
 }
 
-func (node *Node) queryRequestTelemetry() {
+func (node *cronNode) queryRequestTelemetry() {
 	q, err := node.serf.Query(cQueryTelemetry, []byte{}, &serf.QueryParam{
 		RequestAck: false,
 		Timeout:    cQueryTimeout,
@@ -133,14 +134,14 @@ func (node *Node) queryRequestTelemetry() {
 			if err := gob.NewDecoder(bytes.NewReader(resp.Payload)).Decode(&tm); err != nil {
 				glog.Error(err)
 			} else {
-				tm.node = resp.From
+				tm.Node = resp.From
 				node.telemetryChannel <- &tm
 			}
 		}
 	}
 }
 
-func (node *Node) run() {
+func (node *cronNode) run() {
 	serfShutdownChannel := node.serf.ShutdownCh()
 
 	leaderChannel := make(chan bool, cChanBuffer)
@@ -193,7 +194,7 @@ func (node *Node) run() {
 	}
 }
 
-func (node *Node) electionLoop(leaderChannel chan bool, stopChannel chan bool) {
+func (node *cronNode) electionLoop(leaderChannel chan bool, stopChannel chan bool) {
 	node.candidate = leadership.NewCandidate(node.db.store, CLeadershipKey,
 		node.config.NodeName, cDefaultLeaderLock)
 	electionChan, errorChan := node.candidate.RunForElection()
@@ -220,15 +221,15 @@ func (node *Node) electionLoop(leaderChannel chan bool, stopChannel chan bool) {
 	}
 }
 
-func (node *Node) GetName() string {
+func (node *cronNode) GetName() string {
 	return node.config.NodeName
 }
 
-func (node *Node) IsLeader() bool {
+func (node *cronNode) IsLeader() bool {
 	return node.candidate.IsLeader()
 }
 
-func (node *Node) GetLeader() (name string, addr net.IP, err error) {
+func (node *cronNode) GetLeader() (name string, addr net.IP, err error) {
 	if kv, err := node.db.store.Get(CLeadershipKey); err != nil {
 		glog.Errorf("[%s] : cannot fech leader: %v", node.config.NodeName, err)
 		return "", nil, err
@@ -244,4 +245,17 @@ func (node *Node) GetLeader() (name string, addr net.IP, err error) {
 	}
 
 	return "", nil, fmt.Errorf("Node %s not found", name)
+}
+
+func (node *cronNode) SerfMembersCount() int {
+	return node.serf.NumNodes()
+}
+
+func (node *cronNode) SerfMembers() []serf.Member {
+	return node.serf.Members()
+}
+
+func (node *cronNode) Join(addr []string) error {
+	_, err := node.serf.Join(addr, true)
+	return err
 }

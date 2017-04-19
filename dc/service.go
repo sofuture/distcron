@@ -29,7 +29,7 @@ func stackDump() {
  */
 
 type DistCron struct {
-	node          *Node
+	node          Node
 	dispatcher    Dispatcher
 	runner        Runner
 	db            *DB
@@ -91,7 +91,7 @@ func (cron *DistCron) Stop() {
 }
 
 func (cron *DistCron) JoinTo(addr []string) (err error) {
-	if _, err = cron.node.serf.Join(addr, true); err != nil {
+	if err = cron.node.Join(addr); err != nil {
 		glog.Error(err)
 	}
 	return

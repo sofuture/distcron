@@ -6,6 +6,8 @@ import (
 	"encoding/gob"
 	"fmt"
 	"github.com/golang/glog"
+	"github.com/hashicorp/serf/serf"
+	"net"
 )
 
 // log levels
@@ -14,6 +16,17 @@ const cLogDebug = 0
 // 1 for development and testing
 // 64-256 for production
 const cChanBuffer = 10
+
+type Node interface {
+	GetName() string
+	IsLeader() bool
+	GetLeader() (name string, addr net.IP, err error)
+	SerfMembers() []serf.Member
+	SerfMembersCount() int
+	Start()
+	Stop()
+	Join(addr []string) error
+}
 
 type RpcInfo interface {
 	// current node name
