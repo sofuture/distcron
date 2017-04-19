@@ -1,12 +1,13 @@
 package dc
 
 import (
-	"github.com/golang/glog"
-	"github.com/hashicorp/serf/serf"
-	"golang.org/x/net/context"
 	"math"
 	"sync"
 	"time"
+
+	"github.com/golang/glog"
+	"github.com/hashicorp/serf/serf"
+	"golang.org/x/net/context"
 )
 
 /*
@@ -30,7 +31,6 @@ type dispatcher struct {
 }
 
 type nodeInfo struct {
-	jobsCount    int
 	errorCount   int
 	backoffUntil time.Time
 	memAvailable int64
@@ -77,29 +77,38 @@ func (d *dispatcher) NewJob(job *Job) (*JobHandle, error) {
 }
 
 func (d *dispatcher) newJob(job *Job, retryCounter *int) (*JobHandle, error) {
-	if *retryCounter++; *retryCounter >= d.node.SerfMembersCount() {
+	if *retryCounter++; *retryCounter > d.node.SerfMembersCount() {
+		glog.Errorf("[%s] Job %v, retry=%d - max retries, giving up", d.node.GetName(), job, *retryCounter)
 		return nil, ENoNodesAvailable
 	}
 
 	node := d.getAvailableNode(job)
 	if node == nil {
+		glog.Errorf("[%s] Job %v, retry=%d - no more nodes available, giving up", d.node.GetName(), job, *retryCounter)
 		return nil, ENoNodesAvailable
 	}
 
 	rpc, err := d.api.GetRpcForNode(node.Name)
 	if err != nil {
 		glog.Error(err)
-		// shouldn't happen, but we consider it same as no nodes available right now
+		// maybe this node just joined and did not register yet - backoff
+		d.nodeFailed(node.Name)
 		return d.newJob(job, retryCounter)
 	}
 	if handle, err := rpc.RunJobOnThisNode(context.Background(), job); err != nil {
-		glog.Errorf("[%s] Job %v failed to run on node %s : %v", d.node.GetName(), node.Name, err)
+		glog.Errorf("[%s] Job %v failed to run on node %s : %v, retry=%d", d.node.GetName(), job, node.Name, err, *retryCounter)
 		d.nodeFailed(node.Name)
 		return d.newJob(job, retryCounter)
 	} else {
+		glog.V(cLogDebug).Infof("[%s] Job %v running on %s, handle %v", d.node.GetName(), job, node.Name, handle)
 		d.clearNodeErrors(node.Name)
 		return handle, nil
 	}
+}
+
+func fitForJob(info *nodeInfo, job *Job) bool {
+	return (int64(info.memAvailable)-job.MemLimitMb*cMB >= cMinRAM) ||
+		(info.cpuAvailable-float64(job.CpuLimit) >= cMinCPU)
 }
 
 func (d *dispatcher) getAvailableNode(job *Job) *serf.Member {
@@ -111,17 +120,13 @@ func (d *dispatcher) getAvailableNode(job *Job) *serf.Member {
 
 	for _, member := range members {
 		if member.Status == serf.StatusAlive {
-			if info := d.getNodeInfo(member.Name); info.backoffUntil.Before(now) {
-				if (int64(info.memAvailable)-job.MemLimitMb*cMB < cMinRAM) ||
-					(info.cpuAvailable-float64(job.CpuLimit) < cMinCPU) {
-					return &member
-				} else {
-					glog.V(cLogDebug).Infof("[%s] job %v can't run on %v",
-						member.Name, job, info)
-				}
+			if info := d.getNodeInfo(member.Name); info.backoffUntil.Before(now) && fitForJob(info, job) {
+				glog.V(cLogDebug).Infof("[%s] selected node %s:%+v to run %v",
+					d.node.GetName(), member.Name, info, job)
+				return &member
 			} else {
-				glog.V(cLogDebug).Infof("[%s] Job %v can't run on %v : backoff time",
-					member.Name, job, info)
+				glog.V(cLogDebug).Infof("[%s] job %v can't run on %s:%+v",
+					d.node.GetName(), job, member.Name, info)
 			}
 		}
 	}
@@ -140,7 +145,6 @@ func (d *dispatcher) run() {
 		case <-d.stopChannel:
 			return
 		case tm := <-d.telemetryChannel:
-			glog.V(cLogDebug).Info(tm)
 			d.updateTelemetry(tm)
 		}
 	}
@@ -158,6 +162,7 @@ func (d *dispatcher) updateTelemetry(tm *TelemetryInfo) {
 	info.cpuAvailable = cpu - tm.Load.Load5
 	info.memAvailable = int64(tm.Mem.Available)
 
+	glog.V(cLogDebug).Infof("[%s] Telemetry in : %v => %+v", d.node.GetName(), tm, info)
 }
 
 func (d *dispatcher) getNodeInfo(name string) *nodeInfo {

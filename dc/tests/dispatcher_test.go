@@ -1,38 +1,39 @@
 package dc
 
 import (
+	"testing"
+
 	"distcron/dc"
 	"distcron/dc/mocks"
+
 	"github.com/hashicorp/serf/serf"
+	"github.com/shirou/gopsutil/cpu"
+	"github.com/shirou/gopsutil/load"
+	"github.com/shirou/gopsutil/mem"
+	//"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/context"
-	"testing"
 )
+
+var testJob *dc.Job = &dc.Job{ContainerName: "hello-world", CpuLimit: 1.0, MemLimitMb: 500}
 
 func mkFailingClient() *mocks.DistCronClient {
 	client := new(mocks.DistCronClient)
-	client.On("RunJobOnThisNode", context.Background(), (*dc.Job)(nil)).Return(nil, dc.EInternalError)
+	client.On("RunJobOnThisNode", context.Background(), testJob).Return(nil, dc.EInternalError)
 	return client
 }
 
-func mkTelemetryOverload() chan *dc.TelemetryInfo {
-	tchan := make(chan *dc.TelemetryInfo)
-
-	go func() {
-		/*
-			tchan <- &dc.TelemetryInfo{
-				Node: "A",
-			}
-		*/
-	}()
-
-	return tchan
+func mkClient(handle string) *mocks.DistCronClient {
+	client := new(mocks.DistCronClient)
+	client.On("RunJobOnThisNode", context.Background(), testJob).Return(&dc.JobHandle{handle}, nil)
+	return client
 }
 
 func mkSerfMembers(names []string) []serf.Member {
 	members := make([]serf.Member, len(names))
 	for i, _ := range members {
 		members[i].Name = names[i]
+		members[i].Status = serf.StatusAlive
 	}
 	return members
 }
@@ -46,19 +47,42 @@ func mkNode(name string, leader bool, members []serf.Member) *mocks.Node {
 	return node
 }
 
+func mkTelemetry(name string, availCpu int32, availRam uint64, load5 float64) *dc.TelemetryInfo {
+	return &dc.TelemetryInfo{
+		Node: name,
+		Mem:  &mem.VirtualMemoryStat{Available: availRam},
+		Cpu:  []cpu.InfoStat{cpu.InfoStat{Cores: availCpu}},
+		Load: &load.AvgStat{Load5: load5},
+	}
+}
+
 func TestDispatcherNodeTelemetry(t *testing.T) {
-	telemetryChannel := mkTelemetryOverload()
-	failingClient := mkFailingClient()
+	telemetryChannel := make(chan *dc.TelemetryInfo)
 
 	rpc := new(mocks.RpcInfo)
-	rpc.On("GetRpcForNode", "A").Return(failingClient, nil)
-	rpc.On("GetRpcForNode", "B").Return(failingClient, nil)
 
 	serfMembers := mkSerfMembers([]string{"A", "B"})
 	node := mkNode("A", true, serfMembers)
 	disp := dc.NewDispatcher(node, rpc, telemetryChannel)
 	disp.Start()
+	defer disp.Stop()
 
-	_, err := disp.NewJob(&dc.Job{ContainerName: "hello-world", CpuLimit: 1.0, MemLimitMb: 500})
+	// nodes are available, but no telemetry ever receieved,
+	// will fail as resources are unknown, won't try to invoke RPC
+	_, err := disp.NewJob(testJob)
 	require.EqualError(t, err, dc.ENoNodesAvailable.Error())
+
+	// report resource availability, should return from node A
+	rpc.On("GetRpcForNode", "B").Return(mkClient("B"), nil).Once()
+	telemetryChannel <- mkTelemetry("A", 2, 5000, 2.5)
+	telemetryChannel <- mkTelemetry("B", 2, 2000, 0.5)
+	handle, err := disp.NewJob(testJob)
+	require.NoError(t, err)
+	require.EqualValues(t, &dc.JobHandle{"B"}, handle)
+
+	// node B starts to fail, should fail now - A doesn't have any resources available
+	rpc.On("GetRpcForNode", "B").Return(mkFailingClient(), nil).Once()
+	handle, err = disp.NewJob(testJob)
+	require.EqualError(t, err, dc.ENoNodesAvailable.Error())
+
 }
