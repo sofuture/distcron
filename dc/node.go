@@ -4,14 +4,15 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"net"
+	"time"
+
 	"github.com/docker/leadership"
 	"github.com/golang/glog"
 	"github.com/hashicorp/serf/serf"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/load"
 	"github.com/shirou/gopsutil/mem"
-	"net"
-	"time"
 )
 
 /*
@@ -127,16 +128,32 @@ func (node *cronNode) queryRequestTelemetry() {
 
 	respChannel := q.ResponseCh()
 	for !q.Finished() {
-		if resp, ok := <-respChannel; !ok {
+		resp, ok := <-respChannel
+		if !ok {
 			break
+		}
+		tm := TelemetryInfo{}
+		if err := gob.NewDecoder(bytes.NewReader(resp.Payload)).Decode(&tm); err != nil {
+			glog.Error(err)
 		} else {
-			tm := TelemetryInfo{}
-			if err := gob.NewDecoder(bytes.NewReader(resp.Payload)).Decode(&tm); err != nil {
-				glog.Error(err)
-			} else {
-				tm.Node = resp.From
-				node.telemetryChannel <- &tm
-			}
+			tm.Node = resp.From
+			node.telemetryChannel <- &tm
+		}
+	}
+}
+
+func (node *cronNode) processSerfQuery(query *serf.Query) {
+	if fn, there := node.queryResponders[query.Name]; there {
+		var encBuffer bytes.Buffer
+		gobEncoder := gob.NewEncoder(&encBuffer)
+
+		if response, err := fn(query); err != nil {
+			glog.Errorf("[%s] Error responding query %v: %v",
+				node.config.NodeName, query, err)
+		} else if err = gobEncoder.Encode(response); err != nil {
+			glog.Errorf("[%s] Cannot encode response to query %v : %v", response, err)
+		} else if err = query.Respond(encBuffer.Bytes()); err != nil {
+			glog.Errorf("[%s] Failed to respond to query: %v, answer was %d bytes", node.GetName(), err, len(encBuffer.Bytes()))
 		}
 	}
 }
@@ -172,23 +189,8 @@ func (node *cronNode) run() {
 			go node.queryRequestTelemetry()
 		case serfEvent := <-node.serfChannel:
 			glog.V(cLogDebug).Infof("[%s] %v", node.config.NodeName, serfEvent)
-
 			if serfEvent.EventType() == serf.EventQuery {
-				query := serfEvent.(*serf.Query)
-
-				if fn, there := node.queryResponders[query.Name]; there {
-					var encBuffer bytes.Buffer
-					gobEncoder := gob.NewEncoder(&encBuffer)
-
-					if response, err := fn(query); err != nil {
-						glog.Errorf("[%s] Error responding query %v: %v",
-							node.config.NodeName, query, err)
-					} else if err = gobEncoder.Encode(response); err != nil {
-						glog.Errorf("[%s] Cannot encode response to query %v : %v", response, err)
-					} else if err = query.Respond(encBuffer.Bytes()); err != nil {
-						glog.Errorf("[%s] Failed to respond to query: %v, answer was %d bytes", node.GetName(), err, len(encBuffer.Bytes()))
-					}
-				}
+				node.processSerfQuery(serfEvent.(*serf.Query))
 			}
 		}
 	}
@@ -239,8 +241,7 @@ func (node *cronNode) GetLeader() (name string, addr net.IP, err error) {
 
 	for _, n := range node.serf.Members() {
 		if n.Name == name {
-			addr = n.Addr
-			return
+			return name, n.Addr, err
 		}
 	}
 
