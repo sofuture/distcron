@@ -82,27 +82,25 @@ func (r *runner) GetJobOutput(cid string, fn DataCopyFn) (err error) {
 		return err
 	}
 
-	stdoutComplete := make(chan bool)
 	data := make([]byte, cBufSize)
-	go func() {
-		forwardData := true
-		for {
-			if n, err := stdout.Read(data); err != nil {
-				if err != io.EOF {
-					glog.Error(err)
-				}
-				stdoutComplete <- true
-				return
-			} else if forwardData {
-				if err = fn(data[0:n]); err != nil {
-					glog.Error(err)
-					forwardData = false
-				}
+
+	forwardData := true
+	for {
+		n, err := stdout.Read(data)
+		if err != nil {
+			if err != io.EOF {
+				glog.Error(err)
+			}
+			break
+		}
+		if forwardData {
+			if err = fn(data[0:n]); err != nil {
+				glog.Error(err)
+				forwardData = false
 			}
 		}
-	}()
+	}
 
-	<-stdoutComplete
 	if err = cmd.Wait(); err != nil {
 		glog.Error(err)
 		return err

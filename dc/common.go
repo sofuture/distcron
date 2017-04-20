@@ -15,7 +15,7 @@ const cLogDebug = 0
 
 // 1 for development and testing
 // 64-256 for production
-const cChanBuffer = 10
+const cChanBuffer = 1
 
 type Node interface {
 	GetName() string

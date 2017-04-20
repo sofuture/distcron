@@ -119,38 +119,48 @@ func (api *apiService) GetJobStatus(ctx context.Context, jh *JobHandle) (*JobSta
 	}
 }
 
+func (api *apiService) streamLocalJobOutput(handle *jobHandle, stream DistCron_GetJobOutputServer) error {
+	err := api.runner.GetJobOutput(handle.CID, func(data []byte) error {
+		return stream.Send(&Output{data})
+	})
+	if err != nil {
+		glog.Error(err)
+		return EInternalError
+	}
+	return nil
+}
+
+func streamJobOutputFromNode(jh *JobHandle, nodeRpc DistCronClient, stream DistCron_GetJobOutputServer) error {
+	output, err := nodeRpc.GetJobOutput(context.Background(), jh)
+	if err != nil {
+		glog.Error(err)
+		return err
+	}
+
+	for {
+		data, err := output.Recv()
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			glog.Error(err)
+			return err
+		}
+		if err = stream.Send(data); err != nil {
+			glog.Error(err)
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (api *apiService) GetJobOutput(jh *JobHandle, stream DistCron_GetJobOutputServer) error {
 	if handle, nodeRpc, err := api.getRpcFromHandle(jh); err != nil {
 		glog.Error(err)
 		return EInternalError
-	} else if nodeRpc != nil {
-		output, err := nodeRpc.GetJobOutput(context.Background(), jh)
-		if err != nil {
-			glog.Error(err)
-			return err
-		}
-		for {
-			data, err := output.Recv()
-			if err == io.EOF {
-				break
-			} else if err != nil {
-				glog.Error(err)
-				return err
-			}
-			if err = stream.Send(data); err != nil {
-				glog.Error(err)
-				return err
-			}
-		}
-		return nil
+	} else if nodeRpc != nil { // forward to the node where it was executed
+		return streamJobOutputFromNode(jh, nodeRpc, stream)
 	} else {
-		if err = api.runner.GetJobOutput(handle.CID, func(data []byte) error {
-			return stream.Send(&Output{data})
-		}); err != nil {
-			glog.Error(err)
-			return EInternalError
-		} else {
-			return nil
-		}
+		return api.streamLocalJobOutput(handle, stream)
 	}
 }
