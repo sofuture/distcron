@@ -1,6 +1,7 @@
 package dc
 
 import (
+	"runtime"
 	"testing"
 
 	"distcron/dc"
@@ -10,7 +11,6 @@ import (
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/load"
 	"github.com/shirou/gopsutil/mem"
-	//"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/context"
 )
@@ -56,13 +56,16 @@ func mkTelemetry(name string, availCpu int32, availRam uint64, load5 float64) *d
 	}
 }
 
-func TestDispatcherNodeTelemetry(t *testing.T) {
+func TestDispatcherBasics(t *testing.T) {
+
 	telemetryChannel := make(chan *dc.TelemetryInfo)
 
 	rpc := new(mocks.RpcInfo)
 
 	serfMembers := mkSerfMembers([]string{"A", "B"})
 	node := mkNode("A", true, serfMembers)
+	defer node.Stop()
+
 	disp := dc.NewDispatcher(node, rpc, telemetryChannel)
 	disp.Start()
 	defer disp.Stop()
@@ -72,10 +75,12 @@ func TestDispatcherNodeTelemetry(t *testing.T) {
 	_, err := disp.NewJob(testJob)
 	require.EqualError(t, err, dc.ENoNodesAvailable.Error())
 
-	// report resource availability, should return from node A
+	// report resource availability, should return from node B
 	rpc.On("GetRpcForNode", "B").Return(mkClient("B"), nil).Once()
 	telemetryChannel <- mkTelemetry("A", 2, 5000, 2.5)
 	telemetryChannel <- mkTelemetry("B", 2, 2000, 0.5)
+	runtime.Gosched()
+	runtime.Gosched() // ugly way to ensure telemetry gets processed
 	handle, err := disp.NewJob(testJob)
 	require.NoError(t, err)
 	require.EqualValues(t, &dc.JobHandle{"B"}, handle)
@@ -85,4 +90,12 @@ func TestDispatcherNodeTelemetry(t *testing.T) {
 	handle, err = disp.NewJob(testJob)
 	require.EqualError(t, err, dc.ENoNodesAvailable.Error())
 
+	// node A gets resources, B is still in back-off state, A should be selected
+	telemetryChannel <- mkTelemetry("A", 2, 5000, 0.1)
+	runtime.Gosched()
+	rpc.On("GetRpcForNode", "A").Return(mkClient("A"), nil).Once()
+	testJob.CpuLimit = 1.3
+	handle, err = disp.NewJob(testJob)
+	require.NoError(t, err)
+	require.EqualValues(t, &dc.JobHandle{"A"}, handle)
 }
