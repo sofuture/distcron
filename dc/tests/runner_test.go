@@ -2,12 +2,17 @@ package dc
 
 import (
 	"testing"
+
+	"distcron/dc"
+
+	"golang.org/x/net/context"
 )
 
 func TestRunner(t *testing.T) {
-	r := NewRunner()
+	r := dc.NewRunner()
+	ctx := context.Background()
 
-	cid, err := r.RunJob(&Job{
+	cid, err := r.RunJob(ctx, &dc.Job{
 		ContainerName: "hello-world",
 		CpuLimit:      1,
 		MemLimitMb:    500,
@@ -17,16 +22,16 @@ func TestRunner(t *testing.T) {
 		return
 	}
 
-	r.GetJobOutput(cid, print(t))
+	r.GetJobOutput(ctx, cid, print(t))
 
-	if st, err := r.StopJob("no-such-container"); err == nil {
+	if st, err := r.StopJob(ctx, "no-such-container"); err == nil {
 		t.Errorf("stopping inexistent container : %v", st)
 	} else {
 		t.Log(err)
 	}
 }
 
-func print(t *testing.T) DataCopyFn {
+func print(t *testing.T) dc.DataCopyFn {
 	return func(data []byte) error {
 		if len(data) > 0 {
 			t.Log(string(data))

@@ -1,5 +1,6 @@
 package mocks
 
+import context "golang.org/x/net/context"
 import dc "distcron/dc"
 import mock "github.com/stretchr/testify/mock"
 
@@ -8,13 +9,13 @@ type Dispatcher struct {
 	mock.Mock
 }
 
-// NewJob provides a mock function with given fields: job
-func (_m *Dispatcher) NewJob(job *dc.Job) (*dc.JobHandle, error) {
-	ret := _m.Called(job)
+// NewJob provides a mock function with given fields: ctx, job
+func (_m *Dispatcher) NewJob(ctx context.Context, job *dc.Job) (*dc.JobHandle, error) {
+	ret := _m.Called(ctx, job)
 
 	var r0 *dc.JobHandle
-	if rf, ok := ret.Get(0).(func(*dc.Job) *dc.JobHandle); ok {
-		r0 = rf(job)
+	if rf, ok := ret.Get(0).(func(context.Context, *dc.Job) *dc.JobHandle); ok {
+		r0 = rf(ctx, job)
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).(*dc.JobHandle)
@@ -22,8 +23,8 @@ func (_m *Dispatcher) NewJob(job *dc.Job) (*dc.JobHandle, error) {
 	}
 
 	var r1 error
-	if rf, ok := ret.Get(1).(func(*dc.Job) error); ok {
-		r1 = rf(job)
+	if rf, ok := ret.Get(1).(func(context.Context, *dc.Job) error); ok {
+		r1 = rf(ctx, job)
 	} else {
 		r1 = ret.Error(1)
 	}

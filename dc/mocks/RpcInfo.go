@@ -1,5 +1,6 @@
 package mocks
 
+import context "golang.org/x/net/context"
 import dc "distcron/dc"
 import mock "github.com/stretchr/testify/mock"
 
@@ -43,13 +44,13 @@ func (_m *RpcInfo) GetNodeName() string {
 	return r0
 }
 
-// GetRpcForNode provides a mock function with given fields: node
-func (_m *RpcInfo) GetRpcForNode(node string) (dc.DistCronClient, error) {
-	ret := _m.Called(node)
+// GetRpcForNode provides a mock function with given fields: ctx, node
+func (_m *RpcInfo) GetRpcForNode(ctx context.Context, node string) (dc.DistCronClient, error) {
+	ret := _m.Called(ctx, node)
 
 	var r0 dc.DistCronClient
-	if rf, ok := ret.Get(0).(func(string) dc.DistCronClient); ok {
-		r0 = rf(node)
+	if rf, ok := ret.Get(0).(func(context.Context, string) dc.DistCronClient); ok {
+		r0 = rf(ctx, node)
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).(dc.DistCronClient)
@@ -57,8 +58,8 @@ func (_m *RpcInfo) GetRpcForNode(node string) (dc.DistCronClient, error) {
 	}
 
 	var r1 error
-	if rf, ok := ret.Get(1).(func(string) error); ok {
-		r1 = rf(node)
+	if rf, ok := ret.Get(1).(func(context.Context, string) error); ok {
+		r1 = rf(ctx, node)
 	} else {
 		r1 = ret.Error(1)
 	}

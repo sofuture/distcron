@@ -2,40 +2,25 @@ package dc
 
 import (
 	"fmt"
-	"github.com/golang/glog"
-	"google.golang.org/grpc"
-	"os"
-	"os/signal"
-	"runtime"
-	"syscall"
 	"time"
-)
 
-func stackDump() {
-	sigChan := make(chan os.Signal)
-	go func() {
-		stacktrace := make([]byte, 8192*2)
-		for _ = range sigChan {
-			glog.Error("DUMPING STACK")
-			length := runtime.Stack(stacktrace, true)
-			glog.Error(string(stacktrace[:length]))
-		}
-	}()
-	signal.Notify(sigChan, syscall.SIGQUIT)
-}
+	"github.com/golang/glog"
+	"golang.org/x/net/context"
+	"google.golang.org/grpc"
+)
 
 /*
  * binds everything together into single service
  */
 
 type DistCron struct {
+	cancel        context.CancelFunc
 	node          Node
 	dispatcher    Dispatcher
 	runner        Runner
 	db            *DB
 	api           *apiService
 	leaderChannel chan bool
-	stopChannel   chan bool
 }
 
 type rpcInfo struct {
@@ -55,7 +40,6 @@ func NewDistCron(clusterConfig *ClusterConfig,
 	}
 
 	cron := &DistCron{
-		stopChannel:   make(chan bool, cChanBuffer),
 		leaderChannel: make(chan bool, cChanBuffer),
 		db:            db,
 		runner:        NewRunner(),
@@ -77,7 +61,9 @@ func NewDistCron(clusterConfig *ClusterConfig,
 	cron.dispatcher.Start()
 	cron.api.Start(rpcAddr)
 
-	go cron.run()
+	var ctx context.Context
+	ctx, cron.cancel = context.WithCancel(context.Background())
+	go cron.run(ctx)
 
 	return cron, nil
 }
@@ -86,7 +72,8 @@ func (cron *DistCron) Stop() {
 	cron.api.Stop()
 	cron.dispatcher.Stop()
 	cron.node.Stop()
-	cron.stopChannel <- true
+	cron.cancel()
+
 	glog.Infof("[%s] Service Stop", cron.GetNodeName())
 }
 
@@ -121,13 +108,13 @@ func (cron *DistCron) SetRpcForNode(node, addr string) (err error) {
 	return
 }
 
-func (cron *DistCron) GetRpcForNode(node string) (DistCronClient, error) {
+func (cron *DistCron) GetRpcForNode(ctx context.Context, node string) (DistCronClient, error) {
 	info := rpcInfo{}
 	if err := cron.db.Get(fmt.Sprintf("%s/%s", CRPCPrefix, node), &info); err != nil {
 		glog.Error(err)
 		return nil, err
 	}
-	conn, err := grpc.Dial(info.Addr, grpc.WithInsecure())
+	conn, err := grpc.DialContext(ctx, info.Addr, grpc.WithInsecure())
 	if err != nil {
 		glog.Errorf("fail to dial %s: %v", info.Addr, err)
 		return nil, err
@@ -136,10 +123,10 @@ func (cron *DistCron) GetRpcForNode(node string) (DistCronClient, error) {
 	return NewDistCronClient(conn), nil
 }
 
-func (cron *DistCron) run() {
+func (cron *DistCron) run(ctx context.Context) {
 	for {
 		select {
-		case <-cron.stopChannel:
+		case <-ctx.Done():
 			return
 		case leader := <-cron.leaderChannel:
 			glog.V(cLogDebug).Infof("[%s] Leader %v", cron.GetNodeName(), leader)

@@ -5,9 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/gob"
 	"fmt"
+	"net"
+
 	"github.com/golang/glog"
 	"github.com/hashicorp/serf/serf"
-	"net"
+	"golang.org/x/net/context"
 )
 
 // log levels
@@ -38,22 +40,22 @@ type RpcInfo interface {
 	// stores RPC address for a given node in some distributed storage
 	SetRpcForNode(node, addr string) error
 	// given a node name, provides RPC client instance
-	GetRpcForNode(node string) (DistCronClient, error)
+	GetRpcForNode(ctx context.Context, node string) (DistCronClient, error)
 }
 
 type Dispatcher interface {
 	Start()
 	Stop()
-	NewJob(job *Job) (*JobHandle, error)
+	NewJob(ctx context.Context, job *Job) (*JobHandle, error)
 }
 
 type DataCopyFn func(data []byte) error
 
 type Runner interface {
-	RunJob(job *Job) (cid string, err error)
-	GetJobStatus(cid string) (status *JobStatus, err error)
-	StopJob(cid string) (status *JobStatus, err error)
-	GetJobOutput(cid string, fn DataCopyFn) (err error)
+	RunJob(ctx context.Context, job *Job) (cid string, err error)
+	GetJobStatus(ctx context.Context, cid string) (status *JobStatus, err error)
+	StopJob(ctx context.Context, cid string) (status *JobStatus, err error)
+	GetJobOutput(ctx context.Context, cid string, fn DataCopyFn) (err error)
 }
 
 /*
@@ -88,6 +90,11 @@ func (handle *JobHandle) ToInternal() (*jobHandle, error) {
 	}
 }
 
-// common errors returned by API and services
+// no nodes currently available. this may be a transient error when cluster is rebalancing
 var ENoNodesAvailable = fmt.Errorf("E_NO_NODES_AVAILABLE")
+
+// don't want to expose details
 var EInternalError = fmt.Errorf("E_INTERNAL_ERROR")
+
+// deadline exceeded for request
+var ERequestTimeout = fmt.Errorf("E_REQUEST_TIMEOUT")

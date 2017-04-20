@@ -26,8 +26,7 @@ type dispatcher struct {
 	node             Node
 	nodeInfo         map[string]*nodeInfo
 	telemetryChannel chan *TelemetryInfo
-	stopChannel      chan bool
-	running          bool
+	cancel           context.CancelFunc
 }
 
 type nodeInfo struct {
@@ -45,65 +44,64 @@ func NewDispatcher(node Node, api RpcInfo, telemetryChannel chan *TelemetryInfo)
 	return &dispatcher{
 		api:              api,
 		node:             node,
-		stopChannel:      make(chan bool),
 		nodeInfo:         make(map[string]*nodeInfo),
 		telemetryChannel: telemetryChannel,
 	}
 }
 
 func (d *dispatcher) Start() {
-	d.Lock()
-	defer d.Unlock()
-
-	if !d.running {
-		go d.run()
-		d.running = true
-	}
+	var ctx context.Context
+	ctx, d.cancel = context.WithCancel(context.Background())
+	go d.run(ctx)
 }
 
 func (d *dispatcher) Stop() {
-	d.Lock()
-	defer d.Unlock()
-
-	if d.running {
-		d.stopChannel <- true
-		d.running = false
-	}
+	d.cancel()
 }
 
-func (d *dispatcher) NewJob(job *Job) (*JobHandle, error) {
-	var retryCounter int = 0
-	return d.newJob(job, &retryCounter)
+func (d *dispatcher) NewJob(ctx context.Context, job *Job) (*JobHandle, error) {
+	for retry := 0; retry <= d.node.SerfMembersCount(); retry++ {
+		select {
+		case <-ctx.Done():
+			glog.Errorf("[%s] Job %v rejected, context %v", d.node.GetName(), job, ctx.Err())
+			return nil, ERequestTimeout
+		default:
+		}
+
+		node, err := d.getAvailableNode(job)
+		if err != nil {
+			glog.Errorf("[%s] Job %v, retry=%d - no more nodes available, giving up", d.node.GetName(), job, retry)
+			return nil, ENoNodesAvailable
+		}
+
+		if handle, err := d.newJob(ctx, job, node); err == nil {
+			return handle, err
+		}
+	}
+
+	glog.Errorf("[%s] Job %v, max retries, giving up", d.node.GetName(), job)
+	return nil, ENoNodesAvailable
 }
 
-func (d *dispatcher) newJob(job *Job, retryCounter *int) (*JobHandle, error) {
-	if *retryCounter++; *retryCounter > d.node.SerfMembersCount() {
-		glog.Errorf("[%s] Job %v, retry=%d - max retries, giving up", d.node.GetName(), job, *retryCounter)
-		return nil, ENoNodesAvailable
-	}
-
-	node := d.getAvailableNode(job)
-	if node == nil {
-		glog.Errorf("[%s] Job %v, retry=%d - no more nodes available, giving up", d.node.GetName(), job, *retryCounter)
-		return nil, ENoNodesAvailable
-	}
-
-	rpc, err := d.api.GetRpcForNode(node.Name)
+func (d *dispatcher) newJob(ctx context.Context, job *Job, node string) (*JobHandle, error) {
+	rpc, err := d.api.GetRpcForNode(ctx, node)
 	if err != nil {
 		glog.Error(err)
 		// maybe this node just joined and did not register yet - backoff
-		d.nodeFailed(node.Name)
-		return d.newJob(job, retryCounter)
+		d.nodeFailed(node)
+		return nil, err
 	}
-	if handle, err := rpc.RunJobOnThisNode(context.Background(), job); err != nil {
-		glog.Errorf("[%s] Job %v failed to run on node %s : %v, retry=%d", d.node.GetName(), job, node.Name, err, *retryCounter)
-		d.nodeFailed(node.Name)
-		return d.newJob(job, retryCounter)
-	} else {
-		glog.V(cLogDebug).Infof("[%s] Job %v running on %s, handle %v", d.node.GetName(), job, node.Name, handle)
-		d.clearNodeErrors(node.Name)
-		return handle, nil
+
+	handle, err := rpc.RunJobOnThisNode(ctx, job)
+	if err != nil {
+		glog.Errorf("[%s] Job %v failed to run on node %s : %v", d.node.GetName(), job, node, err)
+		d.nodeFailed(node)
+		return nil, err
 	}
+
+	glog.V(cLogDebug).Infof("[%s] Job %v running on %s, handle %v", d.node.GetName(), job, node, handle)
+	d.clearNodeErrors(node)
+	return handle, nil
 }
 
 func fitForJob(info *nodeInfo, job *Job) bool {
@@ -111,7 +109,7 @@ func fitForJob(info *nodeInfo, job *Job) bool {
 		(info.cpuAvailable-float64(job.CpuLimit) >= cMinCPU)
 }
 
-func (d *dispatcher) getAvailableNode(job *Job) *serf.Member {
+func (d *dispatcher) getAvailableNode(job *Job) (string, error) {
 	members := d.node.SerfMembers()
 	now := time.Now()
 
@@ -123,7 +121,7 @@ func (d *dispatcher) getAvailableNode(job *Job) *serf.Member {
 			if info := d.getNodeInfo(member.Name); info.backoffUntil.Before(now) && fitForJob(info, job) {
 				glog.V(cLogDebug).Infof("[%s] selected node %s:%+v to run %v",
 					d.node.GetName(), member.Name, info, job)
-				return &member
+				return member.Name, nil
 			} else {
 				glog.V(cLogDebug).Infof("[%s] job %v can't run on %s:%+v",
 					d.node.GetName(), job, member.Name, info)
@@ -132,17 +130,17 @@ func (d *dispatcher) getAvailableNode(job *Job) *serf.Member {
 	}
 
 	glog.V(cLogDebug).Infof("[%s] Couldn't find any nodes for job %v", d.node.GetName(), job)
-	return nil
+	return "", ENoNodesAvailable
 }
 
 /*
  * main dispatcher activity is monitoring other nodes load, while in leadership mode
  *
  */
-func (d *dispatcher) run() {
+func (d *dispatcher) run(ctx context.Context) {
 	for {
 		select {
-		case <-d.stopChannel:
+		case <-ctx.Done():
 			return
 		case tm := <-d.telemetryChannel:
 			d.updateTelemetry(tm)

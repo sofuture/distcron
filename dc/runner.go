@@ -2,12 +2,15 @@ package dc
 
 import (
 	"fmt"
-	"github.com/golang/glog"
 	"io"
 	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
+
+	"github.com/golang/glog"
+	"golang.org/x/net/context"
 )
 
 type runner struct {
@@ -17,7 +20,7 @@ func NewRunner() Runner {
 	return &runner{}
 }
 
-func (r *runner) RunJob(job *Job) (cid string, err error) {
+func (r *runner) RunJob(ctx context.Context, job *Job) (cid string, err error) {
 	tmpDir, err := ioutil.TempDir("", "dcron")
 	if err != nil {
 		return "", err
@@ -45,7 +48,10 @@ func (r *runner) RunJob(job *Job) (cid string, err error) {
 
 const cBufSize = 1024
 
-func (r *runner) GetJobStatus(cid string) (status *JobStatus, err error) {
+// how much time to wait for cmd.Wait() completion
+const cmdWaitTimeout = time.Second
+
+func (r *runner) GetJobStatus(ctx context.Context, cid string) (status *JobStatus, err error) {
 	cmd := exec.Command("docker", "ps", "--all",
 		"--format", "{{.Status}}",
 		"--filter", fmt.Sprintf("id=%s", cid))
@@ -58,7 +64,7 @@ func (r *runner) GetJobStatus(cid string) (status *JobStatus, err error) {
 	}
 }
 
-func (r *runner) StopJob(cid string) (status *JobStatus, err error) {
+func (r *runner) StopJob(ctx context.Context, cid string) (status *JobStatus, err error) {
 	cmd := exec.Command("docker", "stop", cid)
 	if out, err := cmd.Output(); err != nil {
 		glog.Error(err)
@@ -68,7 +74,36 @@ func (r *runner) StopJob(cid string) (status *JobStatus, err error) {
 	}
 }
 
-func (r *runner) GetJobOutput(cid string, fn DataCopyFn) (err error) {
+func copyProcOutput(ctx context.Context, reader io.ReadCloser, fn DataCopyFn) error {
+	data := make([]byte, cBufSize)
+
+	for {
+		select {
+		case <-ctx.Done():
+			reader.Close()
+			return ERequestTimeout
+		default:
+		}
+
+		n, err := reader.Read(data)
+		if err != nil {
+			if err != io.EOF {
+				glog.Error(err)
+			}
+			break
+		}
+
+		if err = fn(data[0:n]); err != nil {
+			glog.Error(err)
+			reader.Close()
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (r *runner) GetJobOutput(ctx context.Context, cid string, fn DataCopyFn) (err error) {
 	cmd := exec.Command("docker", "logs",
 		"--follow", cid)
 
@@ -82,29 +117,25 @@ func (r *runner) GetJobOutput(cid string, fn DataCopyFn) (err error) {
 		return err
 	}
 
-	data := make([]byte, cBufSize)
-
-	forwardData := true
-	for {
-		n, err := stdout.Read(data)
-		if err != nil {
-			if err != io.EOF {
-				glog.Error(err)
-			}
-			break
-		}
-		if forwardData {
-			if err = fn(data[0:n]); err != nil {
-				glog.Error(err)
-				forwardData = false
-			}
-		}
-	}
-
-	if err = cmd.Wait(); err != nil {
+	if err = copyProcOutput(ctx, stdout, fn); err != nil {
 		glog.Error(err)
-		return err
 	}
 
-	return nil
+	// cmd.Wait() may be waiting indefinitely on process completion
+	// due to stdout not exhausted thus a workaround
+	timeoutCtx, timeoutCancel := context.WithTimeout(ctx, cmdWaitTimeout)
+
+	go func() {
+		defer timeoutCancel()
+		if err = cmd.Wait(); err != nil {
+			glog.Error(err)
+		}
+	}()
+
+	<-timeoutCtx.Done()
+	if timeoutCtx.Err() == context.DeadlineExceeded {
+		glog.Error("cmd.Wait timeout for %s", cid)
+		err = ERequestTimeout
+	}
+	return err
 }
