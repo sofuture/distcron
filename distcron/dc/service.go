@@ -114,6 +114,7 @@ func (cron *DistCron) run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			glog.Infof("[%s] Cron service stop", cron.GetNodeName())
 			return
 		case leader := <-cron.leaderChannel:
 			glog.V(cLogDebug).Infof("[%s] Leader %v", cron.GetNodeName(), leader)

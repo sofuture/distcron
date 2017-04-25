@@ -176,7 +176,7 @@ func (node *cronNode) run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			glog.Infof("[%s] Node shutdown", node.GetName())
-			glog.Error(node.serf.Shutdown())
+			glog.Infof("[%s] Serf shutdown : %v", node.GetName(), node.serf.Shutdown())
 			return
 		case leader := <-leaderChannel:
 			node.leaderChannel <- leader
@@ -208,19 +208,15 @@ func (node *cronNode) electionLoop(ctx context.Context, leaderChannel chan bool)
 		node.config.NodeName, cDefaultLeaderLock)
 	electionChan, errorChan := node.candidate.RunForElection()
 
-	quit := false
 	for {
 		select {
 		case <-ctx.Done():
 			glog.Infof("[%s] Stop election loop", node.GetName())
 			node.candidate.Stop()
-			quit = true
+			return
 		case err := <-errorChan:
 			glog.Errorf("[%s] Error from election %v", node.GetName(), err)
 			leaderChannel <- false
-			if quit {
-				return
-			}
 			glog.Infof("[%s] Will retry election in %v", node.GetName(), cSleepBetweenElections)
 			time.Sleep(cSleepBetweenElections)
 			electionChan, errorChan = node.candidate.RunForElection()
@@ -239,12 +235,12 @@ func (node *cronNode) IsLeader() bool {
 }
 
 func (node *cronNode) GetLeader() (name string, addr net.IP, err error) {
-	if kv, err := node.db.store.Get(CLeadershipKey); err != nil {
+	kv, err := node.db.store.Get(CLeadershipKey)
+	if err != nil {
 		glog.Errorf("[%s] : cannot fech leader: %v", node.config.NodeName, err)
 		return "", nil, err
-	} else {
-		name = string(kv.Value)
 	}
+	name = string(kv.Value)
 
 	for _, n := range node.serf.Members() {
 		if n.Name == name {

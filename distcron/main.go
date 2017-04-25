@@ -1,12 +1,15 @@
 package main
 
 import (
-	"distcron/dc"
 	"flag"
 	"fmt"
-	"github.com/golang/glog"
 	"os"
 	"os/signal"
+
+	"distcron/dc"
+
+	"github.com/golang/glog"
+	"golang.org/x/net/context"
 )
 
 var nodeName = flag.String("node", "", "Node name, should be unique")
@@ -23,7 +26,9 @@ func main() {
 		*nodeName = fmt.Sprintf("dc_%s:%d", *nodeBindAddr, *nodeBindPort)
 	}
 
-	svc, err := dc.NewDistCron(&dc.ClusterConfig{
+	ctx, stop := context.WithCancel(context.Background())
+
+	svc, err := dc.NewDistCron(ctx, &dc.ClusterConfig{
 		NodeName: *nodeName,
 		BindAddr: *nodeBindAddr,
 		BindPort: *nodeBindPort,
@@ -39,5 +44,5 @@ func main() {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
 	<-c
-	svc.Stop()
+	stop()
 }

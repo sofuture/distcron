@@ -1,17 +1,46 @@
 package dc
 
 import (
+	"fmt"
+	"io"
+	"testing"
+	"time"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
-	"io"
-	"testing"
-	"time"
 )
 
-func testApiCluster(t *testing.T) {
+func TestBasicService(t *testing.T) {
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
 
+	cfg := []ClusterConfig{
+		ClusterConfig{
+			NodeName: "A",
+			BindAddr: "127.0.0.1",
+			BindPort: 5006,
+		},
+		ClusterConfig{
+			NodeName: "B",
+			BindAddr: "127.0.0.1",
+			BindPort: 5007,
+		},
+		ClusterConfig{
+			NodeName: "C",
+			BindAddr: "127.0.0.1",
+			BindPort: 5008,
+		}}
+
+	svc := mkServiceCluster(ctx, t, cfg)
+
+	for len(svc) >= 2 {
+		leader := waitForLeader(t, svc)
+		t.Logf("%s is new leader", leader)
+		testAllApiBasics(ctx, t, svc)
+		svc = killLeader(t, svc)
+	}
 }
 
 func mkApiClient(dialTo string) (DistCronClient, error) {
@@ -22,95 +51,93 @@ func mkApiClient(dialTo string) (DistCronClient, error) {
 	}
 }
 
-func mkServiceCluster(t *testing.T) (ctx context.Context, svcA, svcB *DistCron, err error) {
-	dbHosts := []string{"172.17.8.101:2379"}
-	//dbHosts := []string{"consul:8500"}
+type cronSvc struct {
+	cfg     ClusterConfig
+	stop    context.CancelFunc
+	service *DistCron
+}
 
-	svcA, err = NewDistCron(ctx, &ClusterConfig{
-		NodeName: "A",
-		BindAddr: "127.0.0.1",
-		BindPort: 5006,
-	}, dbHosts, ":5556")
-	assert.NoError(t, err)
+func mkServiceCluster(ctx context.Context, t *testing.T, config []ClusterConfig) (svc []cronSvc) {
+	dbHosts := []string{"consul:8500"}
 
-	svcB, err = NewDistCron(ctx, &ClusterConfig{
-		NodeName: "B",
-		BindAddr: "127.0.0.1",
-		BindPort: 5007,
-	}, dbHosts, ":5557")
-	assert.NoError(t, err)
+	if len(config) < 2 {
+		require.Fail(t, "Cluster requires at least 2 nodes")
+	}
 
-	assert.NoError(t, svcB.node.Join([]string{"127.0.0.1:5006"}))
+	svc = make([]cronSvc, len(config))
+	basePort := 5555
 
-	for !svcA.IsLeader() && !svcB.IsLeader() {
+	for i, _ := range config {
+		var c context.Context
+		var err error
+
+		svc[i].cfg = config[i]
+		c, svc[i].stop = context.WithCancel(ctx)
+		svc[i].service, err = NewDistCron(c, &config[i], dbHosts, fmt.Sprintf(":%d", basePort+i))
+		require.NoError(t, err)
+	}
+
+	joinTo := []string{fmt.Sprintf("%s:%d", config[0].BindAddr, config[0].BindPort)}
+	for i := 1; i < len(config); i++ {
+		require.NoError(t, svc[i].service.JoinTo(joinTo))
+	}
+
+	return svc
+}
+
+func waitForLeader(t *testing.T, svc []cronSvc) string {
+	for retry := 0; retry < 20; retry++ {
+		var leaderSvc *cronSvc
+		for _, s := range svc {
+			if s.service.IsLeader() {
+				if leaderSvc != nil {
+					require.Fail(t, "Multiple nodes report being leader : %v and %v", leaderSvc.service.GetNodeName(), s.service.GetNodeName())
+					return ""
+				}
+				leaderSvc = &s
+			} else {
+				t.Logf("%s is NOT a leader", s.service.GetNodeName())
+			}
+		}
+		if leaderSvc != nil {
+			return leaderSvc.service.GetNodeName()
+		}
 		time.Sleep(time.Second * 1)
 	}
-
-	return
+	require.Fail(t, "Timed out waiting for cluster leader")
+	return ""
 }
 
-func TestBasicService(t *testing.T) {
-	ctx, stop := context.WithCancel(context.Background())
-	defer stop()
-
-	svcA, svcB, err := mkServiceCluster(t)
-	require.NoError(t, err)
-	defer svcA.Stop()
-	defer svcB.Stop()
-
-	clientA, err := svcA.GetRpcForNode(ctx, "A")
-	require.NoError(t, err)
-	clientB, err := svcA.GetRpcForNode(ctx, "A")
-	require.NoError(t, err)
-
-	testApiBasics(ctx, clientA, t)
-	testApiBasics(ctx, clientB, t)
+// kills current leader and returns truncated service list
+func killLeader(t *testing.T, svc []cronSvc) []cronSvc {
+	for i, s := range svc {
+		if !s.service.IsLeader() {
+			continue
+		}
+		t.Logf("Killing leader %s", s.service.GetNodeName())
+		s.stop()
+		return append(svc[:i], svc[i+1:]...)
+	}
+	require.Fail(t, "No leader in cluster")
+	return nil
 }
 
-func testNodeRoleSwitch(ctx context.Context, svcA, svcB *DistCron, t *testing.T) {
-	leader, _ := svcA.GetLeaderNode()
-	var other *DistCron
-	var otherClient DistCronClient
-
-	clientA, err := svcA.GetRpcForNode(ctx, "A")
-	assert.NoError(t, err)
-	clientB, err := svcA.GetRpcForNode(ctx, "B")
-	assert.NoError(t, err)
-
-	if leader == "A" {
-		svcA.Stop()
-		other, otherClient = svcB, clientB
-	} else {
-		svcB.Stop()
-		other, otherClient = svcA, clientA
-	}
-
-	_, err = otherClient.RunJob(ctx, &Job{
-		ContainerName: "hello-world",
-		CpuLimit:      1,
-		MemLimitMb:    500,
-	})
-	if other.IsLeader() {
-		assert.NoError(t, err)
-	} else {
-		assert.Error(t, err)
-	}
-
-	for other.IsLeader() == false {
-		time.Sleep(time.Second * 3)
+func testAllApiBasics(ctx context.Context, t *testing.T, svc []cronSvc) {
+	for _, s := range svc {
+		client, err := s.service.GetRpcForNode(ctx, s.cfg.NodeName)
+		require.NoError(t, err)
+		testApiBasics(ctx, client, t)
 	}
 }
 
 func testApiBasics(ctx context.Context, client DistCronClient, t *testing.T) {
 	err := NoNodesAvailableError
 	var handle *JobHandle
-	for ; err == NoNodesAvailableError; handle, err = client.RunJob(ctx, &Job{
+	handle, err = client.RunJob(ctx, &Job{
 		ContainerName: "hello-world",
 		CpuLimit:      1,
 		MemLimitMb:    500,
-	}) {
-		time.Sleep(time.Second * 2)
-	}
+	})
 	require.NoError(t, err)
 
 	_, err = client.StopJob(ctx, handle)

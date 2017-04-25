@@ -20,12 +20,17 @@ const cLogDebug = 0
 const cChanBuffer = 1
 
 type Node interface {
+	// GetName returns this node logical name, must be unique in the cluster
 	GetName() string
+	// IsLeader returns true if this node is a current cluster leader
 	IsLeader() bool
+	// GetLeader returns current cluster leader node
 	GetLeader() (name string, addr net.IP, err error)
 	SerfMembers() []serf.Member
 	SerfMembersCount() int
+	// Starts node service, use context to terminate
 	Start(context.Context)
+	// Join other known nodes in the cluster, should be in form addr:port
 	Join(addr []string) error
 }
 
@@ -43,16 +48,23 @@ type RpcInfo interface {
 }
 
 type Dispatcher interface {
+	// Start dispatcher service. Use context to stop the service
 	Start(context.Context)
+	// NewJob places a job on next available node, taking care of resources
+	// if no node is available, NoNodesAvailableError is returned
 	NewJob(ctx context.Context, job *Job) (*JobHandle, error)
 }
 
 type DataCopyFn func(data []byte) error
 
 type Runner interface {
+	// RunJob spawns new job, returns internal container ID
 	RunJob(ctx context.Context, job *Job) (cid string, err error)
+	// GetJobStatus returns job status as reported by docker daemon, format is unspecified
 	GetJobStatus(ctx context.Context, cid string) (status *JobStatus, err error)
+	// StopJob requests docker daemon to stop a job and returns current status
 	StopJob(ctx context.Context, cid string) (status *JobStatus, err error)
+	// GetJobOutput provides streaming of container most recent output
 	GetJobOutput(ctx context.Context, cid string, fn DataCopyFn) (err error)
 }
 

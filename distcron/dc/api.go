@@ -59,69 +59,90 @@ func (api *apiService) Start(ctx context.Context, listenTo string) error {
 }
 
 func (api *apiService) getLeaderRpc(ctx context.Context) (DistCronClient, error) {
-	if leaderNode, err := api.rpcInfo.GetLeaderNode(); err != nil {
-		glog.Error(err)
+	leaderNode, err := api.rpcInfo.GetLeaderNode()
+	if err != nil {
+		glog.Errorf("[%s] getLeaderRpc %v", api.rpcInfo.GetNodeName(), err)
 		return nil, err
-	} else if leaderRpc, err := api.rpcInfo.GetRpcForNode(ctx, leaderNode); err != nil {
-		glog.Error(err)
-		return nil, err
-	} else {
-		return leaderRpc, nil
 	}
+
+	leaderRpc, err := api.rpcInfo.GetRpcForNode(ctx, leaderNode)
+	if err != nil {
+		glog.Errorf("[%s] getLeaderRpc %v", api.rpcInfo.GetNodeName(), err)
+		return nil, err
+	}
+
+	return leaderRpc, nil
 }
 
 func (api *apiService) getRpcFromHandle(ctx context.Context, jh *JobHandle) (*jobHandle, DistCronClient, error) {
-	if handle, err := jh.ToInternal(); err != nil {
+	handle, err := jh.ToInternal()
+	if err != nil {
 		return nil, nil, err
-	} else if handle.Node == api.rpcInfo.GetNodeName() {
-		return handle, nil, nil
-	} else {
-		rpc, err := api.rpcInfo.GetRpcForNode(ctx, handle.Node)
-		return handle, rpc, err
 	}
+
+	if handle.Node == api.rpcInfo.GetNodeName() {
+		return handle, nil, nil
+	}
+
+	rpc, err := api.rpcInfo.GetRpcForNode(ctx, handle.Node)
+	return handle, rpc, err
 }
 
 func (api *apiService) RunJob(ctx context.Context, job *Job) (*JobHandle, error) {
 	if api.rpcInfo.IsLeader() {
-		glog.Error(api)
-		return api.dispatcher.NewJob(ctx, job)
-	} else if leaderRpc, err := api.getLeaderRpc(ctx); err != nil {
-		return nil, InternalError
-	} else {
-		return leaderRpc.RunJob(ctx, job)
+		handle, err := api.dispatcher.NewJob(ctx, job)
+		if err != nil {
+			glog.Errorf("[%s] RunJob %v", api.rpcInfo.GetNodeName(), err)
+		}
+		return handle, err
 	}
 
+	leaderRpc, err := api.getLeaderRpc(ctx)
+	if err != nil {
+		glog.Errorf("[%s] RunJob %v", api.rpcInfo.GetNodeName(), err)
+		return nil, InternalError
+	}
+
+	return leaderRpc.RunJob(ctx, job)
 }
 
-// internal API method to execute job on specific node
+// RunJobOnThisNode is internal API method to execute job on the node which received the call
 func (api *apiService) RunJobOnThisNode(ctx context.Context, job *Job) (*JobHandle, error) {
-	if cid, err := api.runner.RunJob(ctx, job); err != nil {
+	cid, err := api.runner.RunJob(ctx, job)
+	if err != nil {
+		glog.Errorf("[%s] RunJobOnThisNode %v", api.rpcInfo.GetNodeName(), err)
 		return nil, err
-	} else {
-		return (&jobHandle{CID: cid, Node: api.rpcInfo.GetNodeName()}).Handle(), nil
 	}
+
+	return (&jobHandle{CID: cid, Node: api.rpcInfo.GetNodeName()}).Handle(), nil
 }
 
 func (api *apiService) StopJob(ctx context.Context, jh *JobHandle) (*JobStatus, error) {
-	if handle, nodeRpc, err := api.getRpcFromHandle(ctx, jh); err != nil {
-		glog.Error(err)
+	handle, nodeRpc, err := api.getRpcFromHandle(ctx, jh)
+	if err != nil {
+		glog.Errorf("[%s] StopJob %v", api.rpcInfo.GetNodeName(), err)
 		return nil, InternalError
-	} else if nodeRpc != nil {
-		return nodeRpc.StopJob(ctx, jh)
-	} else {
-		return api.runner.StopJob(ctx, handle.CID)
 	}
+
+	if nodeRpc != nil {
+		return nodeRpc.StopJob(ctx, jh)
+	}
+
+	return api.runner.StopJob(ctx, handle.CID)
 }
 
 func (api *apiService) GetJobStatus(ctx context.Context, jh *JobHandle) (*JobStatus, error) {
-	if handle, nodeRpc, err := api.getRpcFromHandle(ctx, jh); err != nil {
-		glog.Error(err)
+	handle, nodeRpc, err := api.getRpcFromHandle(ctx, jh)
+	if err != nil {
+		glog.Errorf("[%s] GetJobStatus %v", api.rpcInfo.GetNodeName(), err)
 		return nil, InternalError
-	} else if nodeRpc != nil {
-		return nodeRpc.GetJobStatus(ctx, jh)
-	} else {
-		return api.runner.GetJobStatus(ctx, handle.CID)
 	}
+
+	if nodeRpc != nil {
+		return nodeRpc.GetJobStatus(ctx, jh)
+	}
+
+	return api.runner.GetJobStatus(ctx, handle.CID)
 }
 
 func (api *apiService) streamLocalJobOutput(handle *jobHandle, stream DistCron_GetJobOutputServer) error {
@@ -132,6 +153,7 @@ func (api *apiService) streamLocalJobOutput(handle *jobHandle, stream DistCron_G
 		glog.Error(err)
 		return InternalError
 	}
+
 	return nil
 }
 
@@ -168,12 +190,15 @@ func streamJobOutputFromNode(jh *JobHandle, nodeRpc DistCronClient, stream DistC
 }
 
 func (api *apiService) GetJobOutput(jh *JobHandle, stream DistCron_GetJobOutputServer) error {
-	if handle, nodeRpc, err := api.getRpcFromHandle(stream.Context(), jh); err != nil {
+	handle, nodeRpc, err := api.getRpcFromHandle(stream.Context(), jh)
+	if err != nil {
 		glog.Error(err)
 		return InternalError
-	} else if nodeRpc != nil { // forward to the node where it was executed
-		return streamJobOutputFromNode(jh, nodeRpc, stream)
-	} else {
-		return api.streamLocalJobOutput(handle, stream)
 	}
+
+	if nodeRpc != nil { // forward to the node where it was executed
+		return streamJobOutputFromNode(jh, nodeRpc, stream)
+	}
+
+	return api.streamLocalJobOutput(handle, stream)
 }
