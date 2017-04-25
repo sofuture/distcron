@@ -22,18 +22,18 @@ func mkApiClient(dialTo string) (DistCronClient, error) {
 	}
 }
 
-func mkServiceCluster(t *testing.T) (svcA, svcB *DistCron, err error) {
-	//dbHosts := []string{"172.17.8.101:2379"}
-	dbHosts := []string{"consul:8500"}
+func mkServiceCluster(t *testing.T) (ctx context.Context, svcA, svcB *DistCron, err error) {
+	dbHosts := []string{"172.17.8.101:2379"}
+	//dbHosts := []string{"consul:8500"}
 
-	svcA, err = NewDistCron(&ClusterConfig{
+	svcA, err = NewDistCron(ctx, &ClusterConfig{
 		NodeName: "A",
 		BindAddr: "127.0.0.1",
 		BindPort: 5006,
 	}, dbHosts, ":5556")
 	assert.NoError(t, err)
 
-	svcB, err = NewDistCron(&ClusterConfig{
+	svcB, err = NewDistCron(ctx, &ClusterConfig{
 		NodeName: "B",
 		BindAddr: "127.0.0.1",
 		BindPort: 5007,
@@ -50,12 +50,13 @@ func mkServiceCluster(t *testing.T) (svcA, svcB *DistCron, err error) {
 }
 
 func TestBasicService(t *testing.T) {
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+
 	svcA, svcB, err := mkServiceCluster(t)
 	require.NoError(t, err)
 	defer svcA.Stop()
 	defer svcB.Stop()
-
-	ctx := context.Background()
 
 	clientA, err := svcA.GetRpcForNode(ctx, "A")
 	require.NoError(t, err)

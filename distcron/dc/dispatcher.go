@@ -27,7 +27,6 @@ type dispatcher struct {
 	nodeInfo         map[string]*nodeInfo
 	telemetryChannel chan *TelemetryInfo
 	telemetryUpdated chan bool // debug channel for tests synchronization
-	cancel           context.CancelFunc
 }
 
 type nodeInfo struct {
@@ -51,14 +50,9 @@ func NewDispatcher(node Node, api RpcInfo, telemetryChannel chan *TelemetryInfo,
 	}
 }
 
-func (d *dispatcher) Start() {
-	var ctx context.Context
-	ctx, d.cancel = context.WithCancel(context.Background())
+func (d *dispatcher) Start(parentCtx context.Context) {
+	ctx, _ := context.WithCancel(parentCtx)
 	go d.run(ctx)
-}
-
-func (d *dispatcher) Stop() {
-	d.cancel()
 }
 
 func (d *dispatcher) NewJob(ctx context.Context, job *Job) (*JobHandle, error) {

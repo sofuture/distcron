@@ -32,12 +32,7 @@ func (_m *Dispatcher) NewJob(ctx context.Context, job *dc.Job) (*dc.JobHandle, e
 	return r0, r1
 }
 
-// Start provides a mock function with given fields:
-func (_m *Dispatcher) Start() {
-	_m.Called()
-}
-
-// Stop provides a mock function with given fields:
-func (_m *Dispatcher) Stop() {
-	_m.Called()
+// Start provides a mock function with given fields: _a0
+func (_m *Dispatcher) Start(_a0 context.Context) {
+	_m.Called(_a0)
 }

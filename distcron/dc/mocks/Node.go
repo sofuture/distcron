@@ -1,5 +1,7 @@
 package mocks
 
+import context "golang.org/x/net/context"
+
 import mock "github.com/stretchr/testify/mock"
 import net "net"
 import serf "github.com/hashicorp/serf/serf"
@@ -111,12 +113,7 @@ func (_m *Node) SerfMembersCount() int {
 	return r0
 }
 
-// Start provides a mock function with given fields:
-func (_m *Node) Start() {
-	_m.Called()
-}
-
-// Stop provides a mock function with given fields:
-func (_m *Node) Stop() {
-	_m.Called()
+// Start provides a mock function with given fields: _a0
+func (_m *Node) Start(_a0 context.Context) {
+	_m.Called(_a0)
 }

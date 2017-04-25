@@ -32,26 +32,30 @@ func NewApiServer(runner Runner, dispatcher Dispatcher, rpcInfo RpcInfo) (*apiSe
 	return apiSvc, nil
 }
 
-func (api *apiService) Start(listenTo string) error {
+func (api *apiService) Start(ctx context.Context, listenTo string) error {
 	lc, err := net.Listen("tcp", listenTo)
 	if err != nil {
 		glog.Errorf("can't listen: %v", err)
 		return err
 	}
 
+	err = api.rpcInfo.SetRpcForNode(api.rpcInfo.GetNodeName(), listenTo)
+	if err != nil {
+		glog.Error(err)
+		return err
+	}
+
 	RegisterDistCronServer(api.server, api)
 	go func() {
 		glog.Error(api.server.Serve(lc))
-		glog.Error(lc)
 	}()
 
-	api.rpcInfo.SetRpcForNode(api.rpcInfo.GetNodeName(), listenTo)
+	go func() {
+		<-ctx.Done()
+		api.server.GracefulStop()
+	}()
 
 	return nil
-}
-
-func (api *apiService) Stop() {
-	api.server.GracefulStop()
 }
 
 func (api *apiService) getLeaderRpc(ctx context.Context) (DistCronClient, error) {

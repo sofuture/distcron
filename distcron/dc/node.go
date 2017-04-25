@@ -13,6 +13,7 @@ import (
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/load"
 	"github.com/shirou/gopsutil/mem"
+	"golang.org/x/net/context"
 )
 
 /*
@@ -36,6 +37,7 @@ type ClusterConfig struct {
 type queryResponder func(query *serf.Query) (interface{}, error)
 
 type cronNode struct {
+	cancel           context.CancelFunc
 	config           *ClusterConfig
 	serfChannel      chan serf.Event
 	serf             *serf.Serf
@@ -84,12 +86,9 @@ func NewClusterNode(config *ClusterConfig, db *DB,
 	return node, err
 }
 
-func (node *cronNode) Start() {
-	go node.run()
-}
-
-func (node *cronNode) Stop() {
-	node.serf.Shutdown()
+func (node *cronNode) Start(parentCtx context.Context) {
+	ctx, _ := context.WithCancel(parentCtx)
+	go node.run(ctx)
 }
 
 type TelemetryInfo struct {
@@ -115,7 +114,7 @@ func queryRespondTelemetry(query *serf.Query) (interface{}, error) {
 	return info, nil
 }
 
-func (node *cronNode) queryRequestTelemetry() {
+func (node *cronNode) queryRequestTelemetry(ctx context.Context) {
 	q, err := node.serf.Query(cQueryTelemetry, []byte{}, &serf.QueryParam{
 		RequestAck: false,
 		Timeout:    cQueryTimeout,
@@ -128,10 +127,18 @@ func (node *cronNode) queryRequestTelemetry() {
 
 	respChannel := q.ResponseCh()
 	for !q.Finished() {
-		resp, ok := <-respChannel
-		if !ok {
-			break
+		var resp serf.NodeResponse
+		var ok bool
+
+		select {
+		case <-ctx.Done():
+			return
+		case resp, ok = <-respChannel:
+			if !ok {
+				return
+			}
 		}
+
 		tm := TelemetryInfo{}
 		if err := gob.NewDecoder(bytes.NewReader(resp.Payload)).Decode(&tm); err != nil {
 			glog.Error(err)
@@ -158,28 +165,25 @@ func (node *cronNode) processSerfQuery(query *serf.Query) {
 	}
 }
 
-func (node *cronNode) run() {
-	serfShutdownChannel := node.serf.ShutdownCh()
-
+func (node *cronNode) run(ctx context.Context) {
 	leaderChannel := make(chan bool, cChanBuffer)
-	stopElectionChannel := make(chan bool, cChanBuffer)
-	go node.electionLoop(leaderChannel, stopElectionChannel)
+	go node.electionLoop(ctx, leaderChannel)
 
 	var telemetryTicker *time.Ticker
 	var telemetryTickerChannel <-chan time.Time = make(<-chan time.Time)
 
 	for {
 		select {
-		case <-serfShutdownChannel:
+		case <-ctx.Done():
 			glog.Infof("[%s] Node shutdown", node.GetName())
-			stopElectionChannel <- true
+			glog.Error(node.serf.Shutdown())
 			return
 		case leader := <-leaderChannel:
 			node.leaderChannel <- leader
 			if leader {
 				telemetryTicker = time.NewTicker(cTelemetryAcquisitionPeriod)
 				telemetryTickerChannel = telemetryTicker.C
-				go node.queryRequestTelemetry()
+				go node.queryRequestTelemetry(ctx)
 			} else if telemetryTicker != nil {
 				telemetryTicker.Stop()
 			}
@@ -187,7 +191,9 @@ func (node *cronNode) run() {
 
 		case <-telemetryTickerChannel:
 			glog.Infof("[%s] Requesting telemetry", node.GetName())
-			go node.queryRequestTelemetry()
+			// we could create a timeout context but serf query have internal timeout
+			// so just to ensure once we're shutting down that would be picked up as well
+			go node.queryRequestTelemetry(ctx)
 		case serfEvent := <-node.serfChannel:
 			glog.V(cLogDebug).Infof("[%s] %v", node.config.NodeName, serfEvent)
 			if serfEvent.EventType() == serf.EventQuery {
@@ -197,7 +203,7 @@ func (node *cronNode) run() {
 	}
 }
 
-func (node *cronNode) electionLoop(leaderChannel chan bool, stopChannel chan bool) {
+func (node *cronNode) electionLoop(ctx context.Context, leaderChannel chan bool) {
 	node.candidate = leadership.NewCandidate(node.db.store, CLeadershipKey,
 		node.config.NodeName, cDefaultLeaderLock)
 	electionChan, errorChan := node.candidate.RunForElection()
@@ -205,7 +211,7 @@ func (node *cronNode) electionLoop(leaderChannel chan bool, stopChannel chan boo
 	quit := false
 	for {
 		select {
-		case <-stopChannel:
+		case <-ctx.Done():
 			glog.Infof("[%s] Stop election loop", node.GetName())
 			node.candidate.Stop()
 			quit = true

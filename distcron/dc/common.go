@@ -25,8 +25,7 @@ type Node interface {
 	GetLeader() (name string, addr net.IP, err error)
 	SerfMembers() []serf.Member
 	SerfMembersCount() int
-	Start()
-	Stop()
+	Start(context.Context)
 	Join(addr []string) error
 }
 
@@ -44,8 +43,7 @@ type RpcInfo interface {
 }
 
 type Dispatcher interface {
-	Start()
-	Stop()
+	Start(context.Context)
 	NewJob(ctx context.Context, job *Job) (*JobHandle, error)
 }
 

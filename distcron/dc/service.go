@@ -14,7 +14,6 @@ import (
  */
 
 type DistCron struct {
-	cancel        context.CancelFunc
 	node          Node
 	dispatcher    Dispatcher
 	runner        Runner
@@ -28,7 +27,7 @@ type rpcInfo struct {
 	Ts   time.Time `json:"ts"`
 }
 
-func NewDistCron(clusterConfig *ClusterConfig,
+func NewDistCron(ctx context.Context, clusterConfig *ClusterConfig,
 	dbHosts []string,
 	rpcAddr string,
 ) (*DistCron, error) {
@@ -57,24 +56,12 @@ func NewDistCron(clusterConfig *ClusterConfig,
 		return nil, err
 	}
 
-	cron.node.Start()
-	cron.dispatcher.Start()
-	cron.api.Start(rpcAddr)
-
-	var ctx context.Context
-	ctx, cron.cancel = context.WithCancel(context.Background())
+	cron.node.Start(ctx)
+	cron.dispatcher.Start(ctx)
+	cron.api.Start(ctx, rpcAddr)
 	go cron.run(ctx)
 
 	return cron, nil
-}
-
-func (cron *DistCron) Stop() {
-	cron.api.Stop()
-	cron.dispatcher.Stop()
-	cron.node.Stop()
-	cron.cancel()
-
-	glog.Infof("[%s] Service Stop", cron.GetNodeName())
 }
 
 func (cron *DistCron) JoinTo(addr []string) (err error) {
