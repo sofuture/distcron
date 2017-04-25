@@ -14,4 +14,8 @@ services:
     volumes:
       - ./distcron:/code/go/src/distcron
       - ./build:/code/build
-    command: go test -v -run TestDispatcherBasics distcron/dc/tests -alsologtostderr
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: make all
+    privileged: true
+    depends_on:
+      - consul

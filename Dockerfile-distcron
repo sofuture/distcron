@@ -1,5 +1,7 @@
 FROM debian:jessie
-RUN apt-get update && apt-get install -y unzip wget tar build-essential zip git
+
+RUN apt-get update && apt-get install -y unzip wget tar build-essential zip git curl
+RUN curl -fsSL https://get.docker.com/ | sh
 
 RUN mkdir -p /opt
 WORKDIR /opt
@@ -23,3 +25,4 @@ RUN go get -u github.com/golang/protobuf/proto github.com/golang/protobuf/protoc
 RUN go get -u github.com/kardianos/govendor
 
 WORKDIR /code/go/src/distcron
+
