@@ -1,0 +1,17 @@
+version: '2'
+services:
+  consul:
+    build:
+      context : ./
+      dockerfile: Dockerfile-consul
+    command: ./consul agent -dev -client=0.0.0.0
+    ports:
+      - "8500:8500"
+  distcron:
+    build:
+      context : ./
+      dockerfile: Dockerfile-distcron
+    volumes:
+      - ./distcron:/code/go/src/distcron
+      - ./build:/code/build
+    command: go test -v -run TestDispatcherBasics distcron/dc/tests -alsologtostderr
