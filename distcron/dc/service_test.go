@@ -3,14 +3,19 @@ package dc
 import (
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/golang/glog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 )
+
+const maxRetries = 20
+const retryDelay = time.Second
 
 func TestBasicService(t *testing.T) {
 	ctx, stop := context.WithCancel(context.Background())
@@ -35,9 +40,9 @@ func TestBasicService(t *testing.T) {
 
 	svc := mkServiceCluster(ctx, t, cfg)
 
-	for len(svc) >= 2 {
+	for len(svc) >= 1 {
 		leader := waitForLeader(t, svc)
-		t.Logf("%s is new leader", leader)
+		waitUntilAvailable(ctx, t, leader.service)
 		testAllApiBasics(ctx, t, svc)
 		svc = killLeader(t, svc)
 	}
@@ -85,27 +90,30 @@ func mkServiceCluster(ctx context.Context, t *testing.T, config []ClusterConfig)
 	return svc
 }
 
-func waitForLeader(t *testing.T, svc []cronSvc) string {
-	for retry := 0; retry < 20; retry++ {
-		var leaderSvc *cronSvc
-		for _, s := range svc {
-			if s.service.IsLeader() {
+func waitForLeader(t *testing.T, svc []cronSvc) *cronSvc {
+	t.Logf("Waiting for leader, %d nodes", len(svc))
+	for retry := 0; retry < maxRetries; retry++ {
+		var leaderSvc *cronSvc = nil
+		t.Logf("Retry %d", retry)
+		for i, _ := range svc {
+			if svc[i].service.IsLeader() {
 				if leaderSvc != nil {
-					require.Fail(t, "Multiple nodes report being leader : %v and %v", leaderSvc.service.GetNodeName(), s.service.GetNodeName())
-					return ""
+					require.Fail(t, "Multiple nodes report being leader : %v and %v", leaderSvc.service.GetNodeName(), svc[i].service.GetNodeName())
+					return nil
 				}
-				leaderSvc = &s
+				leaderSvc = &svc[i]
+				t.Logf("%s, IS a leader", svc[i].service.GetNodeName())
 			} else {
-				t.Logf("%s is NOT a leader", s.service.GetNodeName())
+				t.Logf("%s, is NOT a leader", svc[i].service.GetNodeName())
 			}
 		}
 		if leaderSvc != nil {
-			return leaderSvc.service.GetNodeName()
+			return leaderSvc
 		}
-		time.Sleep(time.Second * 1)
+		time.Sleep(retryDelay)
 	}
 	require.Fail(t, "Timed out waiting for cluster leader")
-	return ""
+	return nil
 }
 
 // kills current leader and returns truncated service list
@@ -114,6 +122,7 @@ func killLeader(t *testing.T, svc []cronSvc) []cronSvc {
 		if !s.service.IsLeader() {
 			continue
 		}
+		glog.Infof("Killing leader %s", s.service.GetNodeName())
 		t.Logf("Killing leader %s", s.service.GetNodeName())
 		s.stop()
 		return append(svc[:i], svc[i+1:]...)
@@ -122,11 +131,34 @@ func killLeader(t *testing.T, svc []cronSvc) []cronSvc {
 	return nil
 }
 
+// ping a node until it stops returning No nodes available error
+func waitUntilAvailable(ctx context.Context, t *testing.T, service *DistCron) {
+	client, err := service.GetRpcForNode(ctx, service.GetNodeName())
+	for retry := 0; retry < maxRetries; retry++ {
+		_, err = client.RunJob(ctx, &Job{
+			ContainerName: "hello-world",
+			CpuLimit:      0.1,
+			MemLimitMb:    10,
+		})
+		if err == nil {
+			return
+		}
+		// can't get grpc.rpcError.desc field which contains our error code
+		if !strings.Contains(err.Error(), NoNodesAvailableError.Error()) {
+			require.NoError(t, err)
+			return
+		}
+		time.Sleep(retryDelay)
+	}
+	require.Fail(t, "Timed out waiting for node %s readiness", service.GetNodeName())
+}
+
 func testAllApiBasics(ctx context.Context, t *testing.T, svc []cronSvc) {
 	for _, s := range svc {
 		client, err := s.service.GetRpcForNode(ctx, s.cfg.NodeName)
 		require.NoError(t, err)
 		testApiBasics(ctx, client, t)
+		t.Logf("%s API test complete", s.cfg.NodeName)
 	}
 }
 
@@ -148,6 +180,9 @@ func testApiBasics(ctx context.Context, client DistCronClient, t *testing.T) {
 
 	output, err := client.GetJobOutput(ctx, handle)
 	require.NoError(t, err)
+
+	linesPrinted := 0
+	maxLines := 2
 	for {
 		data, err := output.Recv()
 		if err == io.EOF {
@@ -156,6 +191,9 @@ func testApiBasics(ctx context.Context, client DistCronClient, t *testing.T) {
 			t.Error(err)
 			break
 		}
-		t.Log(string(data.Data))
+		if linesPrinted < maxLines {
+			t.Log(string(data.Data))
+			linesPrinted++
+		}
 	}
 }

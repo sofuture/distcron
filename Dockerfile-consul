@@ -1,5 +1,5 @@
 FROM debian:jessie
-RUN apt-get update && apt-get install -y unzip wget tar build-essential zip
+RUN apt-get update && apt-get install -y unzip wget
 
 RUN wget --quiet https://releases.hashicorp.com/consul/0.8.1/consul_0.8.1_linux_amd64.zip
 RUN unzip consul_0.8.1_linux_amd64.zip

@@ -1,7 +1,7 @@
 all: proto tests build
 
 tests:
-	go test -v distcron/dc/... -alsologtostderr
+	go test -race -v distcron/dc/... -alsologtostderr
 
 build:
 	go build -o /code/build/distcron distcron 

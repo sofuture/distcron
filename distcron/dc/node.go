@@ -5,6 +5,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/docker/leadership"
@@ -37,12 +38,14 @@ type ClusterConfig struct {
 type queryResponder func(query *serf.Query) (interface{}, error)
 
 type cronNode struct {
+	sync.RWMutex
 	cancel           context.CancelFunc
 	config           *ClusterConfig
 	serfChannel      chan serf.Event
 	serf             *serf.Serf
 	candidate        *leadership.Candidate
 	leaderChannel    chan bool
+	leader           bool
 	telemetryChannel chan *TelemetryInfo
 	db               *DB
 	queryResponders  map[string]queryResponder
@@ -62,6 +65,7 @@ func NewClusterNode(config *ClusterConfig, db *DB,
 		config:           config,
 		serfChannel:      make(chan serf.Event, cChanBuffer),
 		leaderChannel:    leaderChannel,
+		leader:           false,
 		telemetryChannel: telemetryChannel,
 	}
 	node.queryResponders = map[string]queryResponder{
@@ -221,6 +225,10 @@ func (node *cronNode) electionLoop(ctx context.Context, leaderChannel chan bool)
 			time.Sleep(cSleepBetweenElections)
 			electionChan, errorChan = node.candidate.RunForElection()
 		case elected := <-electionChan:
+			node.Lock()
+			node.leader = elected
+			node.Unlock()
+
 			leaderChannel <- elected
 		}
 	}
@@ -231,7 +239,9 @@ func (node *cronNode) GetName() string {
 }
 
 func (node *cronNode) IsLeader() bool {
-	return node.candidate.IsLeader()
+	node.RLock()
+	defer node.RUnlock()
+	return node.leader
 }
 
 func (node *cronNode) GetLeader() (name string, addr net.IP, err error) {
